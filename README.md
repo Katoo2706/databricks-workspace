@@ -28,7 +28,7 @@ databricks configure --token
 - Provide your Databricks personal access token (generate from User Settings in Databricks).
 
 ### 3. Set Up Git Integration in Databricks
-1. In the Databricks workspace, navigate to **User Settings** > **Git Integration**.
+1. In the Databricks workspace, navigate to **User Settings** > **Linked Account**.
 2. Configure:
    - **Git Provider**: Select your provider (e.g., GitHub).
    - **Git Username**: Your Git account username.
@@ -66,6 +66,11 @@ The repository is structured to align with Databricks Git folders:
      git push origin main
      ```
 - **Pull Updates**: In Databricks Repos, click **Pull** to sync changes from the remote repository.
+
+**Databricks Assistant Autocomplete**:
+1. Navigate to Settings.
+2. Under Developer -> Experimental features, toggle Databricks Assistant Autocomplete.
+3. As you type, suggestions automatically appear. Press Tab to accept a suggestion.
 
 ### 7. Automating Workflows
 - Use **Databricks Workflows** to schedule jobs referencing scripts in `scripts/`.
