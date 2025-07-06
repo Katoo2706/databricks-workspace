@@ -56,78 +56,84 @@ databricks secrets put --scope s3-secrets --key aws-secret-access-key --string-v
 databricks secrets put --scope s3-secrets --key aws-session-token
 ```
 
-## 2. Create Storage Credential (Unity Catalog Required)
 
-### Step 2.1: Create Storage Credential
+## Databricks AWS S3 Integration Guide
 
-```sql
--- Create storage credential using the secrets from your secrets scope
-CREATE STORAGE CREDENTIAL s3_storage_credential
-WITH (
-    AWS_ACCESS_KEY_ID = SECRET('s3-secrets', 'aws-access-key-id'),
-    AWS_SECRET_ACCESS_KEY = SECRET('s3-secrets', 'aws-secret-access-key')
-);
+This guide provides comprehensive instructions for integrating Databricks with AWS S3 using multiple methods.
 
--- Grant permissions to use the storage credential
-GRANT CREATE_EXTERNAL_LOCATION ON STORAGE CREDENTIAL s3_storage_credential TO `your-username@company.com`;
-```
+## 1. Prerequisites
 
-### Step 2.2: Create External Location
+Before starting, ensure you have:
+- AWS account with S3 bucket access
+- Databricks workspace configured
+- AWS credentials (Access Key ID and Secret Access Key)
+- Databricks secrets scope configured
 
-```sql
--- Create external location using the storage credential
-CREATE EXTERNAL LOCATION s3_raw_location
-URL 's3://databrick-lakehouse/'
-WITH (STORAGE_CREDENTIAL s3_storage_credential);
+## 2. Method 1: Direct S3 Access
 
--- Grant permissions on the external location
-GRANT READ FILES, WRITE FILES ON EXTERNAL LOCATION s3_raw_location TO `your-username@company.com`;
-```
-
-### Step 2.3: Create Schema with S3 Location
-
-```sql
--- Create schema pointing to S3 location
-CREATE SCHEMA IF NOT EXISTS s3_raw
-LOCATION 's3://databrick-lakehouse/s3_raw/'
-COMMENT 'Schema for raw data stored in S3';
-
--- Or using the external location (recommended)
-CREATE SCHEMA IF NOT EXISTS s3_raw
-MANAGED LOCATION 's3_raw_location'
-COMMENT 'Schema for raw data stored in S3';
-```
-
-## 3. Alternative Method: Direct Configuration (Without Unity Catalog)
-
-### Step 3.1: Configure S3 Access in Cluster/Notebook
+### 2.1. Access S3 Data Without Mounting
 
 ```python
-# Configure S3 access using secrets directly in your notebook
+# Configure S3 access using secrets in your Databricks notebook
 spark.conf.set("fs.s3a.access.key", dbutils.secrets.get(scope="s3-secrets", key="aws-access-key-id"))
 spark.conf.set("fs.s3a.secret.key", dbutils.secrets.get(scope="s3-secrets", key="aws-secret-access-key"))
 
-# Optional: For temporary credentials
-# spark.conf.set("fs.s3a.session.token", dbutils.secrets.get(scope="s3-secrets", key="aws-session-token"))
-
 # Set S3 endpoint (adjust region as needed)
-spark.conf.set("fs.s3a.endpoint", "s3.us-west-2.amazonaws.com")
+spark.conf.set("fs.s3a.endpoint", "s3.us-east-1.amazonaws.com")
+
+# Read data from S3
+df = spark.read.csv('s3://movie-dataset-youtube/movie_statistic_dataset.csv', inferSchema=True, header=True)
+display(df)
 ```
 
-### Step 3.2: Create Schema Without Unity Catalog
+### 2.2. Access S3 Data by Mounting the Bucket
 
-```sql
--- Create database/schema in Hive metastore
-CREATE DATABASE IF NOT EXISTS s3_raw
-COMMENT 'Schema for raw data stored in S3';
+```python
+# Get credentials from secrets
+access_key = dbutils.secrets.get(scope="s3-secrets", key="aws-access-key-id")
+secret_key = dbutils.secrets.get(scope="s3-secrets", key="aws-secret-access-key")
+encoded_secret_key = secret_key.replace("/", "%2F")
 
--- Use the database
-USE s3_raw;
+# Configure Spark for S3 access
+spark.conf.set("fs.s3a.access.key", access_key)
+spark.conf.set("fs.s3a.secret.key", secret_key)
+
+# Mount S3 bucket
+aws_bucket_name = "movie-dataset-youtube"
+mount_name = "s3data"
+
+dbutils.fs.mount(
+    f"s3a://{access_key}:{encoded_secret_key}@{aws_bucket_name}", 
+    f"/mnt/{mount_name}"
+)
+
+# List files in mounted location
+display(dbutils.fs.ls(f"/mnt/{mount_name}"))
+
+# Unmount when done
+dbutils.fs.unmount(f"/mnt/{mount_name}")
 ```
 
-## 4. Alternative: Instance Profile Method (For AWS)
+## 3. Method 2: Unity Catalog Integration
+This method uses Unity Catalog to manage S3 data access and schemas. We need to create an external location and schema in Unity Catalog.
 
-### Create IAM Role and Policy
+### 3.1. Create External Location in Unity Catalog using Cloud Formation
+
+![cloudformation.png](docs/etc/cloudformation.png)
+
+![cloudformation_2.png](docs/etc/cloudformation_2.png)
+
+![cloudformation_2.png](docs/etc/cloudformation_3.png)
+
+### 3.2. Using Storage Credentials & Profile instance
+https://docs.databricks.com/aws/en/connect/unity-catalog/cloud-storage#manage-storage-credentials
+
+https://www.youtube.com/watch?v=cylJ9hPmt7c
+
+### 3.1. Integrate S3 with Unity Catalog
+
+- Create the IAM role with a Custom Trust Policy.
+- In the Custom Trust Policy field, paste the following policy JSON.
 
 ```json
 {
@@ -135,159 +141,32 @@ USE s3_raw;
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:ListBucket"
-      ],
-      "Resource": [
-        "arn:aws:s3:::databrick-lakehouse",
-        "arn:aws:s3:::databrick-lakehouse/*"
-      ]
+      "Principal": {
+        "AWS": ["arn:aws:iam::414351767826:role/unity-catalog-prod-UCMasterRole-14S5ZJVKOTYTL"]
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "sts:ExternalId": "<DATABRICKS_ACCOUNT_ID>" 
+        }
+      }
     }
   ]
 }
 ```
 
-### Configure Cluster with Instance Profile
+## Create Catalog from external location
 
-```python
-# In cluster configuration, add instance profile ARN
-# This eliminates the need for storing access keys in secrets
-```
+- External Location Name: db_s3_external_databricks-s3-ingest-806e3
+- S3 Path: s3://katolakehouse/
 
-## 5. Test the Integration
+### Method 1: Create New Catalog (Recommended for Production)
+![new_catalog.png](docs/etc/new_catalog.png)
 
-### Test S3 Access
+![lakehouse.png](docs/etc/lakehouse.png)
 
-```python
-# Test reading from S3
-df = spark.read.option("header", "true").csv("s3://databrick-lakehouse/sample-data/")
-df.show()
-
-# Test writing to S3
-df.write.mode("overwrite").parquet("s3://databrick-lakehouse/test-output/")
-
-# List files in S3 bucket
-dbutils.fs.ls("s3://databrick-lakehouse/")
-```
-
-### Create Tables in the Schema
-
+Use catalog lakehouse
 ```sql
--- Create a table in the s3_raw schema
-CREATE TABLE s3_raw.sample_table (
-    id INT,
-    name STRING,
-    created_date DATE
-)
-USING DELTA
-LOCATION 's3://databrick-lakehouse/s3_raw/sample_table/';
 
--- Insert sample data
-INSERT INTO s3_raw.sample_table VALUES 
-(1, 'John Doe', '2025-01-01'),
-(2, 'Jane Smith', '2025-01-02');
+
 ```
-
-## 6. Best Practices
-
-### Security Considerations
-
-- ✅ Use secrets scope instead of hardcoding credentials
-- ✅ Implement least privilege access policies
-- ✅ Regularly rotate access keys
-- ✅ Use instance profiles when possible on AWS
-
-### Performance Optimization
-
-```python
-# Enable S3 optimizations
-spark.conf.set("fs.s3a.connection.maximum", "100")
-spark.conf.set("fs.s3a.threads.max", "64")
-spark.conf.set("fs.s3a.connection.establish.timeout", "5000")
-spark.conf.set("fs.s3a.connection.timeout", "200000")
-```
-
-### Monitoring and Logging
-
-```python
-# Enable S3 request logging
-spark.conf.set("fs.s3a.bucket.databrick-lakehouse.request.logging", "true")
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Access Denied Errors**
-   - Verify IAM permissions
-   - Check bucket policy
-   - Ensure correct AWS region
-
-2. **Connection Timeouts**
-   - Adjust connection timeout settings
-   - Check network connectivity
-   - Verify S3 endpoint configuration
-
-3. **Authentication Issues**
-   - Verify secrets scope configuration
-   - Check access key validity
-   - Ensure proper credential rotation
-
-4. **Special Characters in Secrets (e.g., dashes)**
-   ```bash
-   # Error: "No previous regular expression"
-   # Solution: Use quotes or interactive mode
-   
-   # Method 1: Quote the entire secret
-   databricks secrets put --scope s3-secrets --key aws-secret-access-key --string-value "secret-with-dashes-123"
-   
-   # Method 2: Use interactive mode (recommended)
-   databricks secrets put --scope s3-secrets --key aws-secret-access-key
-   # Then paste your secret when prompted
-   
-   # Method 3: Use environment variable
-   export MY_SECRET="secret-with-dashes-123"
-   databricks secrets put --scope s3-secrets --key aws-secret-access-key --string-value "$MY_SECRET"
-   
-   # Method 4: Use file input
-   echo "secret-with-dashes-123" | databricks secrets put --scope s3-secrets --key aws-secret-access-key
-   ```
-
-5. **Alternative: Using Databricks UI**
-   - Navigate to Databricks workspace
-   - Go to Settings → Developer → Secrets
-   - Create secret scope manually
-   - Add secrets through the web interface (handles special characters automatically)
-
-### Verification Commands
-
-```python
-# Verify secrets scope
-dbutils.secrets.listScopes()
-
-# Verify S3 connectivity
-dbutils.fs.ls("s3://databrick-lakehouse/")
-
-# Check cluster configuration
-spark.conf.get("fs.s3a.access.key")  # Should show [REDACTED]
-```
-
-## Additional Resources
-
-- [Databricks Documentation](https://docs.databricks.com/)
-- [AWS S3 Documentation](https://docs.aws.amazon.com/s3/)
-- [Unity Catalog Documentation](https://docs.databricks.com/unity-catalog/)
-
-## Support
-
-For issues or questions, please refer to:
-- Databricks Support Portal
-- AWS Support Center
-- Internal team documentation
-
----
-
-**Note:** Replace `databrick-lakehouse` with your actual S3 bucket name and update configuration values according to your specific environment.
